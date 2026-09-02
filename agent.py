@@ -1,59 +1,82 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 import asyncio
 import os
 
-import cognee
-from cognee import SearchType
-from dotenv import load_dotenv
+from cogwit_sdk import cogwit, CogwitConfig
 from openai import OpenAI
 
-load_dotenv()
-
 COGNEE_API_KEY = os.environ["COGNEE_API_KEY"]
-COGNEE_URL = os.environ["COGNEE_URL"]
-client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+client = cogwit(CogwitConfig(api_key=COGNEE_API_KEY))
+openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 MODEL = "gpt-4o-mini"
 
 DATASET_NAME = "sales-support"
 
 
-async def _connect_cloud():
-    await cognee.serve(url=COGNEE_URL, api_key=COGNEE_API_KEY)
+def _is_error(result) -> bool:
+    return type(result).__name__.endswith("Error")
 
 
 def _extract_text(results) -> str:
-    """cognee returns a list of per-dataset result dicts; pull the actual
-    text out instead of stringifying the whole structure."""
     parts = []
     for r in results or []:
-        if isinstance(r, dict) and "search_result" in r:
-            parts.extend(str(x) for x in r["search_result"])
-        else:
-            parts.append(str(r))
-    return "\n".join(p for p in parts if p.strip())
+        text = getattr(r, "text", None) or getattr(r, "content", None) or str(r)
+        parts.append(text)
+    return "\n".join(p for p in parts if p and p.strip())
 
 
-async def _cognee_context(query: str, session_id: str) -> str:
-    await _connect_cloud()
-    try:
-        results = await cognee.search(
-            query_text=query,
-            query_type=SearchType.GRAPH_COMPLETION,
-            datasets=[DATASET_NAME],
-            session_id=session_id,
-            only_context=True,
-        )
-    except Exception:
+async def _cognee_context(query: str) -> str:
+    results = await client.search(
+        query_text=query,
+        query_type=client.SearchType.CHUNKS,
+    )
+    if _is_error(results):
         return ""
     return _extract_text(results)
 
 
-def run_agent(user_message: str, session_id: str) -> str:
-    context = asyncio.run(_cognee_context(user_message, session_id))
+def _rewrite_query(user_message: str, conversation: list) -> str:
+    """Use recent turns to make a standalone, fully-specified question --
+    restores the effect of cross-turn continuity without needing it from
+    the search backend itself."""
+    if not conversation:
+        return user_message
+
+    recent = conversation[-6:]  # last few turns is plenty of context
+    history_text = "\n".join(f"{m['role']}: {m['content']}" for m in recent)
+
+    response = openai_client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Given the recent conversation and a new question, rewrite the "
+                    "new question so it's fully self-contained and makes sense on "
+                    "its own, with no pronouns or implicit references to earlier "
+                    "messages. If it's already self-contained, return it unchanged. "
+                    "Return ONLY the rewritten question, nothing else."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"RECENT CONVERSATION:\n{history_text}\n\nNEW QUESTION:\n{user_message}",
+            },
+        ],
+    )
+    return response.choices[0].message.content.strip()
+
+
+def run_agent(user_message: str, conversation: list = None) -> str:
+    search_query = _rewrite_query(user_message, conversation or [])
+    context = asyncio.run(_cognee_context(search_query))
 
     if not context:
         return "I don't have that information in memory."
 
-    response = client.chat.completions.create(
+    response = openai_client.chat.completions.create(
         model=MODEL,
         messages=[
             {
@@ -76,9 +99,12 @@ def run_agent(user_message: str, session_id: str) -> str:
 
 
 async def _cognee_remember(text: str) -> None:
-    await _connect_cloud()
-    await cognee.add(text, dataset_name=DATASET_NAME)
-    await cognee.cognify(datasets=[DATASET_NAME])
+    result = await client.add(text, dataset_name=DATASET_NAME)
+    if _is_error(result):
+        raise RuntimeError(f"add failed: {result}")
+    cognify_result = await client.cognify(datasets=[DATASET_NAME])
+    if _is_error(cognify_result):
+        raise RuntimeError(f"cognify failed: {cognify_result}")
 
 
 def remember(text: str) -> None:
@@ -86,15 +112,17 @@ def remember(text: str) -> None:
 
 
 async def _cognee_ingest(file_obj, on_progress=None) -> None:
-    await _connect_cloud()
-
     if on_progress:
         on_progress(20, "Uploading document to memory...")
-    await cognee.add([file_obj], dataset_name=DATASET_NAME)
+    result = await client.add([file_obj], dataset_name=DATASET_NAME)
+    if _is_error(result):
+        raise RuntimeError(f"add failed: {result}")
 
     if on_progress:
         on_progress(55, "Building knowledge graph (this can take a minute)...")
-    await cognee.cognify(datasets=[DATASET_NAME])
+    cognify_result = await client.cognify(datasets=[DATASET_NAME])
+    if _is_error(cognify_result):
+        raise RuntimeError(f"cognify failed: {cognify_result}")
 
     if on_progress:
         on_progress(100, "Done.")

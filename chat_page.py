@@ -103,9 +103,8 @@ def show_chat_page():
         if prompt := st.chat_input("Type a message"):
             messages.append({"role": "user", "content": prompt})
 
-            session_id = f"{st.session_state.current_user}_{conversation_name}"
             with st.spinner("Thinking..."):
-                response = run_agent(prompt, session_id)
+                response = run_agent(prompt, messages[:-1])
 
             messages.append({"role": "assistant", "content": response})
             save_chat_history(st.session_state.current_user, st.session_state.conversations)

@@ -7,7 +7,16 @@ uploaded or explicitly remembered.
 
 ## What you'll need before you start
 
-- Python 3.11+ installed
+- **Python 3.10, 3.11, 3.12, or 3.13** — not 3.14 or newer, and not older
+  than 3.10. This is a hard requirement of `cogwit-sdk` (the Cognee Cloud
+  client this app uses), not a suggestion. Check what you have:
+  ```bash
+  python3 --version
+  ```
+  If that's 3.14+ (or below 3.10), see step 2 below before doing anything
+  else — trying to install dependencies with the wrong version will fail
+  partway through with a confusing `ERROR: Could not find a version that
+  satisfies the requirement cogwit-sdk` message.
 - An [OpenAI](https://platform.openai.com/account/api-keys) API key
 - A [Cognee Cloud](https://platform.cognee.ai) account and API key
 
@@ -31,11 +40,23 @@ requirements.txt
 
 ## 2. Create a virtual environment
 
+**If `python3 --version` above was already 3.10–3.13**, just:
 ```bash
 cd path/to/project
 python3 -m venv .venv
 source .venv/bin/activate
 ```
+
+**If it wasn't** (e.g. you have 3.14, or nothing installed), install a
+compatible version via Homebrew first, then point the venv at that
+specific interpreter instead of your default `python3`:
+```bash
+brew install python@3.12
+/opt/homebrew/opt/python@3.12/bin/python3.12 -m venv .venv
+source .venv/bin/activate
+```
+(On Intel Macs, Homebrew's path is `/usr/local/opt/...` instead of
+`/opt/homebrew/opt/...` — adjust accordingly.)
 
 Your terminal prompt should now show `(.venv)` at the start of the line.
 **Every new terminal tab needs this activation step run again** — it
@@ -45,12 +66,13 @@ Confirm it worked:
 
 ```bash
 which python3
+python3 --version
 ```
 
-This should print a path ending in `.venv/bin/python3`, inside your
-project folder. If it prints something like `/usr/bin/python3` or
-`/opt/homebrew/bin/python3` instead, the venv isn't active — re-run the
-`source` command above.
+The first should print a path ending in `.venv/bin/python3`, inside your
+project folder. The second should show 3.10–3.13. If either looks wrong,
+the venv isn't active or was built with the wrong interpreter — re-run
+the steps above.
 
 ## 3. Install dependencies
 
@@ -69,16 +91,15 @@ python3 -m pip install -r requirements.txt
 **OpenAI:** platform.openai.com → API Keys → Create new secret key.
 
 **Cognee Cloud:** platform.cognee.ai → sign in → API Keys page → create
-a key. 
+a key.
 
 ## 5. Create your `.env` file
 
 Create an `.env` file, then fill in your actual keys:
 
 ```
+COGNEE_API_KEY=ck_...
 OPENAI_API_KEY=sk-...
-COGNEE_API_KEY=...
-COGNEE_URL=API Base URL, should look something like https://tenant-...aws.cognee.ai
 ```
 
 `.env` is only read once, when the app process starts — if you change
@@ -137,14 +158,26 @@ From the admin panel you can:
   **Important: use `pip`, not `pipx`.** `pipx` installs tools in their own
   isolated environment, invisible to your project — it's meant for
   standalone CLI tools, not for packages you `import` in code. If you ever
-  already have `streamlit` or `cognee` installed via `pipx`, that
-  installation won't help this project and can actively cause confusing 
-  "it's installed but Python can't find it" errors. Check with:
-  ```bash 
+  already have `streamlit` installed via `pipx`, that installation won't
+  help this project and can actively cause confusing "it's installed but
+  Python can't find it" errors. Check with:
+  ```bash
   pipx list
   ```
   and uninstall anything that shows up there with `pipx uninstall <name>`
   to avoid the confusion later.
+- **"ERROR: Could not find a version that satisfies the requirement
+  cogwit-sdk"** → your venv was built with an incompatible Python version
+  (3.14+, or older than 3.10). Delete it and rebuild using a Python
+  3.10–3.13 interpreter — see step 2 above.
+- **`streamlit run` uses the wrong environment** (e.g. a
+  `ModuleNotFoundError` even though `pip show` confirms the package is
+  installed) → run `which streamlit` to check where the command is
+  actually resolving from. If it's not inside your project's `.venv`,
+  something else on your PATH (another install, a leftover `pipx`
+  install, etc.) is shadowing it. Safest fix: bypass the `streamlit`
+  command entirely and run `python3 -m streamlit run app.py` instead —
+  this guarantees it uses whichever Python you currently have active.
 - **"externally-managed-environment" error on `pip install`** → this
   means you're not actually inside an active venv, even if it looks like
   you are. Delete and recreate it: `rm -rf .venv && python3 -m venv
@@ -156,3 +189,8 @@ From the admin panel you can:
   survive being copied to a new folder or a new machine; they bake in
   absolute paths at creation time. Always create a fresh one per project
   location rather than copying an old one over.
+- **Connection/TLS errors reaching Cognee Cloud** → if `api.cognee.ai`
+  itself is having issues, you can point directly at your tenant's own
+  URL instead by adding `COGWIT_API_BASE=https://tenant-<your-tenant-id>.aws.cognee.ai`
+  to `.env` (find your tenant ID in the Cognee Cloud dashboard, or in
+  any raw search response's `dataset_tenant_id` field).
